@@ -1,0 +1,9 @@
+__pycache__/
+*.egg-info/
+.mutmut-cache/
+mutants/
+mutmut-*-results.txt
+.pytest_cache/
+dist/
+build/
+*.pyc

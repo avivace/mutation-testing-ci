@@ -1,0 +1,234 @@
+name: Mutation Testing Regression Check
+
+on:
+  pull_request:
+    branches:
+      - "*"
+    paths:
+      - "src/**"
+      - "tests/unit/**"
+
+permissions:
+  contents: read
+
+jobs:
+  mutation-regression:
+    runs-on: ubuntu-latest
+
+    env:
+      TERM: dumb
+
+    steps:
+      - name: Check out the repository (full history for branch comparison)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed mutatable source files
+        id: changed-files
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          BASE="${PR_BASE_SHA}"
+          HEAD="${PR_HEAD_SHA}"
+
+          # Source files changed directly
+          SRC_FILES=$(git diff --name-only "${BASE}" "${HEAD}" \
+            | grep '^src/.*\.py$' \
+            | true)
+
+          # Source files corresponding to changed test files (test_X.py -> X.py)
+          TEST_DERIVED=$(git diff --name-only "${BASE}" "${HEAD}" \
+            | grep '^tests/unit/test_.*\.py$' \
+            | sed 's|tests/unit/test_||' \
+            | while IFS= read -r basename; do
+                find src/ -name "$basename" 2>/dev/null
+              done) || true
+
+          # Union, deduplicated, comma-joined
+          CHANGED=$(printf '%s\n%s\n' "$SRC_FILES" "$TEST_DERIVED" \
+            | sort -u | grep -v '^$' | paste -sd ',') || true
+
+          echo "paths=$CHANGED" >> "$GITHUB_OUTPUT"
+          if [ -z "$CHANGED" ]; then
+            echo "No mutatable source files affected — skipping mutation testing."
+          else
+            echo "Mutatable files affected: $CHANGED"
+          fi
+
+      - name: Set up Python
+        if: steps.changed-files.outputs.paths != ''
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: "pip"
+
+      - name: Install dependencies
+        if: steps.changed-files.outputs.paths != ''
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install pytest-timeout
+
+      - name: Run mutation testing on target branch
+        if: steps.changed-files.outputs.paths != ''
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CHANGED_PATHS: ${{ steps.changed-files.outputs.paths }}
+        run: |
+          git checkout "${PR_BASE_SHA}"
+          pip install -e "." --quiet
+          python3 << 'PYEOF'
+          import os
+          import re
+          content = open('pyproject.toml').read()
+          paths = os.environ['CHANGED_PATHS'].split(',')
+          paths_str = '[' + ', '.join('"' + p.strip() + '"' for p in paths) + ']'
+          content = re.sub(r'paths_to_mutate = \[.*\]', 'paths_to_mutate = ' + paths_str, content)
+          if 'also_copy' not in content:
+              content = content.replace('[tool.mutmut]\n', '[tool.mutmut]\nalso_copy = ["src/"]\n')
+          open('pyproject.toml', 'w').write(content)
+          PYEOF
+          mutmut run --max-children 4 || true
+          mutmut results --all true > mutmut-base-results.txt
+          rm -rf mutants/ .mutmut-cache
+          git checkout -- pyproject.toml
+          git checkout "${PR_HEAD_SHA}"
+          pip install -e "." --quiet
+
+      - name: Run mutation testing on PR branch
+        if: steps.changed-files.outputs.paths != ''
+        env:
+          CHANGED_PATHS: ${{ steps.changed-files.outputs.paths }}
+        run: |
+          python3 << 'PYEOF'
+          import os
+          import re
+          content = open('pyproject.toml').read()
+          paths = os.environ['CHANGED_PATHS'].split(',')
+          paths_str = '[' + ', '.join('"' + p.strip() + '"' for p in paths) + ']'
+          content = re.sub(r'paths_to_mutate = \[.*\]', 'paths_to_mutate = ' + paths_str, content)
+          if 'also_copy' not in content:
+              content = content.replace('[tool.mutmut]\n', '[tool.mutmut]\nalso_copy = ["src/"]\n')
+          open('pyproject.toml', 'w').write(content)
+          PYEOF
+          mutmut run --max-children 4 || true
+          mutmut results --all true > mutmut-pr-results.txt
+
+      - name: Compare mutation results and detect regressions
+        if: steps.changed-files.outputs.paths != ''
+        run: |
+          python3 << 'SCRIPT'
+          import sys
+          from collections import Counter
+
+          MINIMUM_MUTATION_SCORE = 80
+          MUTANT_TRANSITION_WARNING_LIMIT = 50
+
+          def parse_results(path):
+              """Parse mutmut results into dict of {mutant_name: status}."""
+              results = {}
+              with open(path, encoding='utf-8') as f:
+                  for line in f:
+                      line = line.strip()
+                      if ': ' in line:
+                          name, status = line.rsplit(': ', 1)
+                          name = name.strip()
+                          results[name] = status
+              return results
+
+          base = parse_results('mutmut-base-results.txt')
+          pr = parse_results('mutmut-pr-results.txt')
+
+          base_counts = Counter(base.values())
+          pr_counts = Counter(pr.values())
+          common_mutants = sorted(set(base).intersection(pr))
+          base_only_mutants = sorted(set(base).difference(pr))
+          pr_only_mutants = sorted(set(pr).difference(base))
+
+          exact_id_regressions = []
+          for mutant in common_mutants:
+              base_status = base[mutant]
+              pr_status = pr[mutant]
+              if base_status == 'killed' and pr_status != 'killed':
+                  exact_id_regressions.append(f"  {mutant}: {base_status} -> {pr_status}")
+
+          print(
+              "Target branch: "
+              f"{len(base)} mutants "
+              f"({base_counts['killed']} killed, "
+              f"{base_counts['timeout']} timed out, "
+              f"{base_counts['survived']} survived)"
+          )
+          print(
+              "PR branch:     "
+              f"{len(pr)} mutants "
+              f"({pr_counts['killed']} killed, "
+              f"{pr_counts['timeout']} timed out, "
+              f"{pr_counts['survived']} survived)"
+          )
+          print(
+              "Mutant IDs:    "
+              f"{len(common_mutants)} matched, "
+              f"{len(base_only_mutants)} base-only, "
+              f"{len(pr_only_mutants)} PR-only"
+          )
+
+          if exact_id_regressions:
+              print(
+                  f"\n::warning::Exact mutant ID comparison found "
+                  f"{len(exact_id_regressions)} killed mutant(s) that are no longer killed"
+              )
+              print(
+                  "Exact mutmut IDs are advisory because source edits can move or rename "
+                  "mutants, and timeout outcomes can vary between runs."
+              )
+              print("Advisory transitions:")
+              for regression in exact_id_regressions[:MUTANT_TRANSITION_WARNING_LIMIT]:
+                  print(regression)
+              if len(exact_id_regressions) > MUTANT_TRANSITION_WARNING_LIMIT:
+                  remaining = len(exact_id_regressions) - MUTANT_TRANSITION_WARNING_LIMIT
+                  print(f"  ... and {remaining} more")
+          else:
+              print("\nNo advisory exact mutant ID regressions detected.")
+
+          killed_delta = pr_counts['killed'] - base_counts['killed']
+          timeout_delta = pr_counts['timeout'] - base_counts['timeout']
+          survived_delta = pr_counts['survived'] - base_counts['survived']
+          print(
+              f"Delta:         {killed_delta:+d} killed, "
+              f"{timeout_delta:+d} timed out, "
+              f"{survived_delta:+d} survived"
+          )
+
+          pr_total_testable = pr_counts['killed'] + pr_counts['survived']
+          if pr_total_testable > 0:
+              pr_score = pr_counts['killed'] / pr_total_testable * 100
+              print(f"\nPR mutation score: {pr_score:.1f}% (minimum: {MINIMUM_MUTATION_SCORE}%)")
+              if pr_score < MINIMUM_MUTATION_SCORE:
+                  print(
+                      f"::error::Mutation score {pr_score:.1f}% is below "
+                      f"the minimum threshold of {MINIMUM_MUTATION_SCORE}%"
+                  )
+                  sys.exit(1)
+          else:
+              print("::error::No killed or survived mutants were reported for the PR branch")
+              sys.exit(1)
+
+          if pr_counts['timeout']:
+              print(
+                  f"::warning::{pr_counts['timeout']} mutant(s) timed out "
+                  "on the PR branch and were excluded from the mutation score"
+              )
+          SCRIPT
+
+      - name: Upload mutation results on failure
+        if: failure() && steps.changed-files.outputs.paths != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutation-regression-results
+          path: |
+            mutmut-base-results.txt
+            mutmut-pr-results.txt
