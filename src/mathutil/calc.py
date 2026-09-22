@@ -1,3 +1,4 @@
+# Basic arithmetic and clamping utilities
 def add(a, b):
     return a + b
 
