@@ -3,6 +3,10 @@
 Testing the mutation-regression workflow in [DataDog/dd-license-attribution](https://github.com/DataDog/dd-license-attribution).
 
 
+## Getting Started
+
+See below for instructions on running the project locally.
+
 ## Running locally
 
 ```bash
