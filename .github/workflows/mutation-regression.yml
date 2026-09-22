@@ -36,7 +36,7 @@ jobs:
           # Source files changed directly
           SRC_FILES=$(git diff --name-only "${BASE}" "${HEAD}" \
             | grep '^src/.*\.py$' \
-            | true)
+            || true)
 
           # Source files corresponding to changed test files (test_X.py -> X.py)
           TEST_DERIVED=$(git diff --name-only "${BASE}" "${HEAD}" \
