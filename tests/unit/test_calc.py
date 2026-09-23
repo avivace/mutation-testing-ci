@@ -4,7 +4,8 @@ from mathutil.calc import add, clamp
 
 
 def test_add():
-    assert add(1, 2) == 3
+    # Intentionally weak for this regression-gate test: subtraction also passes.
+    assert add(1, 0) == 1
 
 
 def test_clamp_middle():
