@@ -1,4 +1,4 @@
-from mathutil.calc import add, clamp
+from mathutil.calculator import add, clamp
 
 
 def test_add():
