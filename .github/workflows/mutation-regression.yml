@@ -35,15 +35,19 @@ jobs:
 
           # Source files changed directly
           SRC_FILES=$(git diff --name-only "${BASE}" "${HEAD}" \
-            | grep '^src/.*\.py$' \
-            | true)
+            | grep '^src/dd_license_attribution/.*\.py$' \
+            | grep -v '/cli/' \
+            | grep -v '/adaptors/' \
+            | grep -v '/config/') || true
 
           # Source files corresponding to changed test files (test_X.py -> X.py)
           TEST_DERIVED=$(git diff --name-only "${BASE}" "${HEAD}" \
             | grep '^tests/unit/test_.*\.py$' \
             | sed 's|tests/unit/test_||' \
             | while IFS= read -r basename; do
-                find src/ -name "$basename" 2>/dev/null
+                find src/dd_license_attribution -name "$basename" \
+                  ! -path '*/cli/*' ! -path '*/adaptors/*' ! -path '*/config/*' \
+                  2>/dev/null
               done) || true
 
           # Union, deduplicated, comma-joined
@@ -87,6 +91,9 @@ jobs:
           paths = os.environ['CHANGED_PATHS'].split(',')
           paths_str = '[' + ', '.join('"' + p.strip() + '"' for p in paths) + ']'
           content = re.sub(r'paths_to_mutate = \[.*\]', 'paths_to_mutate = ' + paths_str, content)
+          # also_copy ensures the full src/ tree is in mutants/ so imports work when
+          # paths_to_mutate is scoped to individual files (mutmut removes src/ from
+          # sys.path and replaces it with mutants/src/, which would otherwise be partial)
           if 'also_copy' not in content:
               content = content.replace('[tool.mutmut]\n', '[tool.mutmut]\nalso_copy = ["src/"]\n')
           open('pyproject.toml', 'w').write(content)
@@ -155,6 +162,7 @@ jobs:
               if base_status == 'killed' and pr_status != 'killed':
                   exact_id_regressions.append(f"  {mutant}: {base_status} -> {pr_status}")
 
+          # Summary stats
           print(
               "Target branch: "
               f"{len(base)} mutants "
@@ -203,6 +211,7 @@ jobs:
               f"{survived_delta:+d} survived"
           )
 
+          # Enforce minimum mutation score on PR branch
           pr_total_testable = pr_counts['killed'] + pr_counts['survived']
           if pr_total_testable > 0:
               pr_score = pr_counts['killed'] / pr_total_testable * 100
