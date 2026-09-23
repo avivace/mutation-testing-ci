@@ -42,7 +42,7 @@ jobs:
 
           # Source files changed directly
           SRC_FILES=$(git diff --name-only "${BASE}" "${HEAD}" \
-            | grep '^src/dd_license_attribution/.*\.py$' \
+            | grep '^src/mathutil/.*\.py$' \
             | grep -v '/cli/' \
             | grep -v '/adaptors/' \
             | grep -v '/config/') || true
@@ -52,7 +52,7 @@ jobs:
             | grep '^tests/unit/test_.*\.py$' \
             | sed 's|tests/unit/test_||' \
             | while IFS= read -r basename; do
-                find src/dd_license_attribution -name "$basename" \
+                find src/mathutil -name "$basename" \
                   ! -path '*/cli/*' ! -path '*/adaptors/*' ! -path '*/config/*' \
                   2>/dev/null
               done) || true
@@ -268,7 +268,7 @@ jobs:
                   sys.exit(1)
 
           # Dotted module prefixes for the changed files, e.g.
-          # src/dd_license_attribution/foo.py -> dd_license_attribution.foo.
+          # src/mathutil/calc.py -> mathutil.calc.
           # mutmut names mutants '<module>.<function-marker>__mutmut_N'.
           changed_paths = [p.strip() for p in os.environ["CHANGED_PATHS"].split(",") if p.strip()]
           modules = [
